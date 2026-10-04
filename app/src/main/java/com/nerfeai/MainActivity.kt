@@ -1,20 +1,17 @@
 package com.nerfeai
 
 import android.app.Activity
-import android.content.Intent
+import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
-import android.content.Context
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -34,8 +31,8 @@ class MainActivity : Activity() {
     private var conversationHistory = ""
 
     companion object {
-        private const val PICK_MODEL_REQUEST = 100
-        private const val MODEL_FILE_NAME = "nerfeai-model.gguf"
+        private const val MODEL_ASSET = "nerfeai-model.gguf"
+        private const val MODEL_FILE = "nerfeai-model.gguf"
 
         init {
             System.loadLibrary("nerfeai")
@@ -49,17 +46,13 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         buildInterface()
 
-        val existingModel = File(filesDir, MODEL_FILE_NAME)
+        addMessage(
+            "NerfeAI",
+            "Welcome! Your AI model is bundled with this app. " +
+            "The first startup may take a while while the model is prepared."
+        )
 
-        if (existingModel.exists()) {
-            loadModel(existingModel)
-        } else {
-            statusText.text = "Import your Qwen GGUF model to begin."
-            addMessage(
-                "NerfeAI",
-                "Hello! I'm NerfeAI. Import your GGUF model to start chatting offline."
-            )
-        }
+        prepareBundledModel()
     }
 
     private fun buildInterface() {
@@ -77,7 +70,6 @@ class MainActivity : Activity() {
             textSize = 25f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER_VERTICAL
             setPadding(8, 8, 8, 4)
         }
 
@@ -88,36 +80,14 @@ class MainActivity : Activity() {
             setPadding(8, 0, 8, 10)
         }
 
-        val topButtons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-
-        val importButton = Button(this).apply {
-            text = "Import Model"
-            setOnClickListener { openModelPicker() }
-        }
-
         val newChatButton = Button(this).apply {
             text = "New Chat"
             setOnClickListener {
                 conversationHistory = ""
                 chatLayout.removeAllViews()
-                addMessage(
-                    "NerfeAI",
-                    if (modelReady) "New chat started. How can I help?"
-                    else "Import your GGUF model to start chatting."
-                )
+                addMessage("NerfeAI", "New chat started. How can I help?")
             }
         }
-
-        topButtons.addView(
-            importButton,
-            LinearLayout.LayoutParams(0, -2, 1f)
-        )
-        topButtons.addView(
-            newChatButton,
-            LinearLayout.LayoutParams(0, -2, 1f)
-        )
 
         chatLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -126,13 +96,7 @@ class MainActivity : Activity() {
 
         scrollView = ScrollView(this).apply {
             isFillViewport = true
-            addView(
-                chatLayout,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                )
-            )
+            addView(chatLayout)
         }
 
         val bottomBar = LinearLayout(this).apply {
@@ -148,13 +112,13 @@ class MainActivity : Activity() {
             minLines = 1
             maxLines = 4
             imeOptions = EditorInfo.IME_ACTION_SEND
-            setSingleLine(false)
             setBackgroundColor(Color.rgb(35, 42, 60))
             setPadding(14, 8, 14, 8)
         }
 
         sendButton = Button(this).apply {
             text = "Send"
+            isEnabled = false
             setOnClickListener { sendMessage() }
         }
 
@@ -171,14 +135,11 @@ class MainActivity : Activity() {
             input,
             LinearLayout.LayoutParams(0, -2, 1f)
         )
-        bottomBar.addView(
-            sendButton,
-            LinearLayout.LayoutParams(-2, -2)
-        )
+        bottomBar.addView(sendButton)
 
         root.addView(title)
         root.addView(statusText)
-        root.addView(topButtons)
+        root.addView(newChatButton)
         root.addView(
             scrollView,
             LinearLayout.LayoutParams(-1, 0, 1f)
@@ -188,59 +149,34 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    private fun openModelPicker() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
+    private fun prepareBundledModel() {
+        val modelFile = File(filesDir, MODEL_FILE)
+
+        if (modelFile.exists() && modelFile.length() > 400_000_000L) {
+            loadModel(modelFile)
+            return
         }
 
-        startActivityForResult(intent, PICK_MODEL_REQUEST)
-    }
-
-    @Deprecated("Uses the system document picker for broad Android compatibility")
-    override fun onActivityResult(
-        requestCode: Int,
-        resultCode: Int,
-        data: Intent?
-    ) {
-        super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode == PICK_MODEL_REQUEST &&
-            resultCode == RESULT_OK
-        ) {
-            val uri: Uri = data?.data ?: return
-            importModel(uri)
-        }
-    }
-
-    private fun importModel(uri: Uri) {
-        modelReady = false
+        statusText.text = "Copying bundled AI model to app storage..."
         sendButton.isEnabled = false
-        statusText.text = "Copying model into app storage..."
 
         Thread {
             try {
-                val destination = File(filesDir, MODEL_FILE_NAME)
-
-                val source = contentResolver.openInputStream(uri)
-                    ?: throw IllegalStateException("Could not open selected file.")
-
-                source.use { inputStream ->
-                    FileOutputStream(destination).use { outputStream ->
-                        inputStream.copyTo(outputStream)
+                assets.open(MODEL_ASSET).use { source ->
+                    FileOutputStream(modelFile).use { destination ->
+                        source.copyTo(destination)
                     }
                 }
 
                 runOnUiThread {
-                    loadModel(destination)
+                    loadModel(modelFile)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    statusText.text = "Model import failed."
-                    sendButton.isEnabled = true
+                    statusText.text = "Could not prepare bundled model."
                     Toast.makeText(
                         this,
-                        e.message ?: "Could not import model.",
+                        e.message ?: "Model preparation failed.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -249,9 +185,8 @@ class MainActivity : Activity() {
     }
 
     private fun loadModel(file: File) {
-        modelReady = false
+        statusText.text = "Loading AI model into memory..."
         sendButton.isEnabled = false
-        statusText.text = "Loading model into memory. Please wait..."
 
         Thread {
             val loaded = try {
@@ -262,21 +197,19 @@ class MainActivity : Activity() {
 
             runOnUiThread {
                 modelReady = loaded
-                sendButton.isEnabled = true
+                sendButton.isEnabled = loaded
 
                 if (loaded) {
-                    statusText.text = "Model loaded • Offline mode ready"
-                    if (chatLayout.childCount == 0) {
-                        addMessage(
-                            "NerfeAI",
-                            "Model loaded successfully. Ask me anything!"
-                        )
-                    }
+                    statusText.text = "Qwen loaded • Offline mode ready"
+                    addMessage(
+                        "NerfeAI",
+                        "I'm ready! Ask me anything. You can chat offline."
+                    )
                 } else {
-                    statusText.text = "Could not load model. Check the GGUF file."
+                    statusText.text = "Model loading failed."
                     Toast.makeText(
                         this,
-                        "Model loading failed.",
+                        "Could not load the bundled GGUF model.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -288,7 +221,7 @@ class MainActivity : Activity() {
         if (!modelReady) {
             Toast.makeText(
                 this,
-                "Import and load your GGUF model first.",
+                "The AI model is still loading.",
                 Toast.LENGTH_SHORT
             ).show()
             return
@@ -311,8 +244,7 @@ class MainActivity : Activity() {
         val prompt =
             "<|im_start|>system\n" +
             "You are NerfeAI, a helpful offline AI assistant. " +
-            "Answer clearly and accurately. If you do not know something, " +
-            "say so honestly.\n<|im_end|>\n" +
+            "Answer clearly and honestly.\n<|im_end|>\n" +
             conversationHistory +
             "<|im_start|>assistant\n"
 
@@ -333,7 +265,7 @@ class MainActivity : Activity() {
                     "<|im_start|>assistant\n$answer<|im_end|>\n"
 
                 sendButton.isEnabled = modelReady
-                statusText.text = "Model loaded • Offline mode ready"
+                statusText.text = "Qwen loaded • Offline mode ready"
             }
         }.start()
     }
@@ -379,13 +311,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = if (isUser) Gravity.END else Gravity.START
             setPadding(0, 5, 0, 5)
+
             addView(
                 bubble,
-                LinearLayout.LayoutParams(
-                    0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    0.90f
-                )
+                LinearLayout.LayoutParams(0, -2, 0.90f)
             )
         }
 

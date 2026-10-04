@@ -13,7 +13,7 @@ jobs:
   build:
     name: Build offline Android app
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout NerfeAI project
@@ -49,13 +49,27 @@ jobs:
             https://github.com/ggml-org/llama.cpp.git \
             third_party/llama.cpp
 
+      - name: Download Qwen model into Android assets
+        run: |
+          mkdir -p app/src/main/assets
+
+          curl --fail --location \
+            --retry 5 \
+            --retry-all-errors \
+            --output app/src/main/assets/nerfeai-model.gguf \
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+          test "$(stat -c%s app/src/main/assets/nerfeai-model.gguf)" -gt 400000000
+
+          ls -lh app/src/main/assets/nerfeai-model.gguf
+
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
 
       - name: Publish APK
         uses: actions/upload-artifact@v4
         with:
-          name: NerfeAI-debug-APK
+          name: NerfeAI-offline-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
