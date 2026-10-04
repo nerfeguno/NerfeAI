@@ -15,9 +15,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
-    env:
-      CMAKE_BUILD_PARALLEL_LEVEL: 2
-
     steps:
       - name: Checkout NerfeAI project
         uses: actions/checkout@v4
@@ -30,6 +27,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
