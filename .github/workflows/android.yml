@@ -63,13 +63,13 @@ jobs:
 
           ls -lh app/src/main/assets/nerfeai-model.gguf
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Build optimized APK
+        run: gradle --no-daemon assembleRelease
 
       - name: Publish APK
         uses: actions/upload-artifact@v4
         with:
           name: NerfeAI-offline-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/NerfeAI.apk
           if-no-files-found: error
           retention-days: 14
