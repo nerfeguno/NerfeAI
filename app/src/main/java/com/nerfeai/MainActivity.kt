@@ -260,15 +260,33 @@ class MainActivity : Activity() {
 
             runOnUiThread {
                 addMessage("NerfeAI", answer)
+                conversationHistory +=			
+			"<|im_start|>assistant\n$answer<|im_end|>\n"
 
-                conversationHistory +=
-                    "<|im_start|>assistant\n$answer<|im_end|>\n"
-
-                sendButton.isEnabled = modelReady
+		trimConversationHistory()
+		sendButton.isEnabled = modelReady
                 statusText.text = "Qwen loaded • Offline mode ready"
             }
         }.start()
     }
+
+	private fun trimConversationHistory() {
+		val marker = "<|im_start|>user\n"
+		val starts = mutableListOf<Int>()
+
+		var index = conversationHistory.indexOf(marker)
+
+		while (index >= 0) {
+			starts.add(index)
+			index = conversationHistory.indexOf(
+				marker,
+				index + marker.length
+			)
+		}
+		if (starts.size > 4) {
+			conversationHistory = conversationHistory.substring(starts[starts.size - 4])
+		}
+	}
 
     private fun addMessage(role: String, message: String) {
         val isUser = role == "You"

@@ -70,8 +70,8 @@ Java_com_nerfeai_MainActivity_nativeGenerate(
     llama_context_params contextParams =
             llama_context_default_params();
 
-    contextParams.n_ctx = 2048;
-    contextParams.n_batch = 512;
+    contextParams.n_ctx = 1024;
+    contextParams.n_batch = 256;
     contextParams.n_threads = 4;
     contextParams.n_threads_batch = 4;
 
@@ -102,7 +102,7 @@ Java_com_nerfeai_MainActivity_nativeGenerate(
 
     tokens.resize(tokenCount);
 
-    if (tokens.empty() || tokens.size() > 1800) {
+    if (tokens.empty() || tokens.size() > 900) {
         llama_free(ctx);
         return env->NewStringUTF(
                 "Conversation is too long. Start a new chat."
@@ -130,7 +130,7 @@ Java_com_nerfeai_MainActivity_nativeGenerate(
     std::string output;
     char piece[512];
 
-    for (int i = 0; i < 160; ++i) {
+    for (int i = 0; i < 80; ++i) {
         llama_token newToken = llama_sampler_sample(sampler, ctx, -1);
 
         if (llama_vocab_is_eog(vocab, newToken)) {
