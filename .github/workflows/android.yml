@@ -66,10 +66,13 @@ jobs:
       - name: Build optimized APK
         run: gradle --no-daemon assembleRelease
 
+      - name: List generated APK files
+        run: find app/build/outputs/apk -type f -name "*.apk" -print
+
       - name: Publish APK
         uses: actions/upload-artifact@v4
         with:
           name: NerfeAI-offline-APK
-          path: app/build/outputs/apk/release/NerfeAI.apk
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
