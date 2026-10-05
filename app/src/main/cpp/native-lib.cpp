@@ -17,15 +17,24 @@ static std::mutex g_mutex;
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_com_nerfeai_MainActivity_nativeLoadModel(
-        JNIEnv *env, jobject, jstring pathString) {
+        JNIEnv *env,
+        jobject,
+        jstring pathString) {
 
-    const char *path = env->GetStringUTFChars(pathString, nullptr);
+    if (pathString == nullptr) {
+        return JNI_FALSE;
+    }
+
+    const char *path =
+            env->GetStringUTFChars(pathString, nullptr);
+
     if (path == nullptr) {
         return JNI_FALSE;
     }
 
     std::lock_guard<std::mutex> lock(g_mutex);
 
+    // Free previous model if one is already loaded.
     if (g_model != nullptr) {
         llama_model_free(g_model);
         g_model = nullptr;
@@ -33,8 +42,11 @@ Java_com_nerfeai_MainActivity_nativeLoadModel(
 
     llama_backend_init();
 
-    llama_model_params modelParams = llama_model_default_params();
-    g_model = llama_model_load_from_file(path, modelParams);
+    llama_model_params modelParams =
+            llama_model_default_params();
+
+    g_model =
+            llama_model_load_from_file(path, modelParams);
 
     env->ReleaseStringUTFChars(pathString, path);
 
@@ -46,113 +58,283 @@ Java_com_nerfeai_MainActivity_nativeLoadModel(
     return JNI_TRUE;
 }
 
+
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_nerfeai_MainActivity_nativeGenerate(
-        JNIEnv *env, jobject, jstring promptString) {
+        JNIEnv *env,
+        jobject,
+        jstring promptString) {
+
+    if (promptString == nullptr) {
+        return env->NewStringUTF(
+                "Error: Empty prompt."
+        );
+    }
 
     const char *promptChars =
             env->GetStringUTFChars(promptString, nullptr);
 
     if (promptChars == nullptr) {
-        return env->NewStringUTF("Error: Could not read prompt.");
+        return env->NewStringUTF(
+                "Error: Could not read prompt."
+        );
     }
 
     std::string prompt(promptChars);
-    env->ReleaseStringUTFChars(promptString, promptChars);
+
+    env->ReleaseStringUTFChars(
+            promptString,
+            promptChars
+    );
 
     std::lock_guard<std::mutex> lock(g_mutex);
 
     if (g_model == nullptr) {
-        return env->NewStringUTF("Please import a model first.");
+        return env->NewStringUTF(
+                "Please load a model first."
+        );
     }
 
+    /*
+     * Larger context allows:
+     *
+     * - Longer conversation history
+     * - Longer user messages
+     * - Longer AI responses
+     *
+     * Qwen2.5 models support much larger contexts,
+     * but 4096 is a reasonable Android starting point.
+     */
     llama_context_params contextParams =
             llama_context_default_params();
 
-    contextParams.n_ctx = 1024;
+    contextParams.n_ctx = 4096;
+
+    /*
+     * Number of tokens processed together.
+     */
     contextParams.n_batch = 256;
+
+    /*
+     * CPU threads.
+     *
+     * Keep this moderate for Android.
+     */
     contextParams.n_threads = 4;
     contextParams.n_threads_batch = 4;
 
-    llama_context *ctx = llama_init_from_model(g_model, contextParams);
+    llama_context *ctx =
+            llama_init_from_model(
+                    g_model,
+                    contextParams
+            );
 
     if (ctx == nullptr) {
-        return env->NewStringUTF("Error: Could not initialize context.");
+        return env->NewStringUTF(
+                "Error: Could not initialize context."
+        );
     }
 
-    const llama_vocab *vocab = llama_model_get_vocab(g_model);
+    const llama_vocab *vocab =
+            llama_model_get_vocab(g_model);
 
-    std::vector<llama_token> tokens(prompt.size() + 16);
-
-    int32_t tokenCount = llama_tokenize(
-            vocab,
-            prompt.c_str(),
-            static_cast<int32_t>(prompt.size()),
-            tokens.data(),
-            static_cast<int32_t>(tokens.size()),
-            true,
-            true
+    /*
+     * Allocate enough space for the prompt tokens.
+     *
+     * prompt.size() is measured in bytes, so this is
+     * intentionally larger than the expected token count.
+     */
+    std::vector<llama_token> tokens(
+            prompt.size() + 32
     );
 
+    int32_t tokenCount =
+            llama_tokenize(
+                    vocab,
+                    prompt.c_str(),
+                    static_cast<int32_t>(
+                            prompt.size()
+                    ),
+                    tokens.data(),
+                    static_cast<int32_t>(
+                            tokens.size()
+                    ),
+                    true,
+                    true
+            );
+
     if (tokenCount < 0) {
+
+        /*
+         * llama_tokenize may return the required
+         * number of tokens when the buffer is too small.
+         */
         llama_free(ctx);
-        return env->NewStringUTF("Error: Prompt is too large.");
+
+        return env->NewStringUTF(
+                "Error: Prompt is too large."
+        );
     }
 
     tokens.resize(tokenCount);
 
-    if (tokens.empty() || tokens.size() > 900) {
+    /*
+     * Leave enough room inside the 4096-token
+     * context for generation.
+     *
+     * 4096 total context
+     * - 512 response tokens
+     * = approximately 3584 prompt tokens
+     */
+    const size_t maxPromptTokens = 3584;
+
+    if (tokens.empty()) {
+
         llama_free(ctx);
+
         return env->NewStringUTF(
-                "Conversation is too long. Start a new chat."
+                "Error: Empty prompt."
         );
     }
 
-    llama_batch batch = llama_batch_get_one(
-            tokens.data(),
-            static_cast<int32_t>(tokens.size())
-    );
+    if (tokens.size() > maxPromptTokens) {
 
-    if (llama_decode(ctx, batch) != 0) {
         llama_free(ctx);
-        return env->NewStringUTF("Error: Prompt evaluation failed.");
+
+        return env->NewStringUTF(
+                "Conversation is too long. "
+                "Start a new chat."
+        );
     }
 
+    /*
+     * Evaluate the complete prompt.
+     */
+    llama_batch batch =
+            llama_batch_get_one(
+                    tokens.data(),
+                    static_cast<int32_t>(
+                            tokens.size()
+                    )
+            );
+
+    if (llama_decode(ctx, batch) != 0) {
+
+        llama_free(ctx);
+
+        return env->NewStringUTF(
+                "Error: Prompt evaluation failed."
+        );
+    }
+
+    /*
+     * Greedy sampler.
+     *
+     * This keeps the current behavior of NerfeAI.
+     */
     llama_sampler_chain_params samplerParams =
             llama_sampler_chain_default_params();
 
     llama_sampler *sampler =
-            llama_sampler_chain_init(samplerParams);
+            llama_sampler_chain_init(
+                    samplerParams
+            );
 
-    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+    if (sampler == nullptr) {
+
+        llama_free(ctx);
+
+        return env->NewStringUTF(
+                "Error: Could not initialize sampler."
+        );
+    }
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_greedy()
+    );
+
+    /*
+     * Maximum number of NEW tokens generated
+     * for the assistant response.
+     *
+     * Previous value:
+     *
+     *     80
+     *
+     * New value:
+     *
+     *     512
+     */
+    const int maxGeneratedTokens = 512;
 
     std::string output;
-    char piece[512];
 
-    for (int i = 0; i < 80; ++i) {
-        llama_token newToken = llama_sampler_sample(sampler, ctx, -1);
+    /*
+     * Buffer used to convert generated tokens
+     * into text.
+     */
+    char piece[1024];
 
-        if (llama_vocab_is_eog(vocab, newToken)) {
+    for (int i = 0;
+         i < maxGeneratedTokens;
+         ++i) {
+
+        llama_token newToken =
+                llama_sampler_sample(
+                        sampler,
+                        ctx,
+                        -1
+                );
+
+        /*
+         * Stop naturally when the model produces
+         * an end-of-generation token.
+         */
+        if (llama_vocab_is_eog(
+                    vocab,
+                    newToken)) {
+
             break;
         }
 
-        int pieceLength = llama_token_to_piece(
-                vocab,
-                newToken,
-                piece,
-                sizeof(piece),
-                0,
-                true
-        );
+        int pieceLength =
+                llama_token_to_piece(
+                        vocab,
+                        newToken,
+                        piece,
+                        sizeof(piece),
+                        0,
+                        true
+                );
 
         if (pieceLength > 0) {
-            output.append(piece, pieceLength);
+            output.append(
+                    piece,
+                    pieceLength
+            );
         }
 
-        batch = llama_batch_get_one(&newToken, 1);
+        /*
+         * Feed the newly generated token back
+         * into the model.
+         */
+        batch =
+                llama_batch_get_one(
+                        &newToken,
+                        1
+                );
 
-        if (llama_decode(ctx, batch) != 0) {
+        if (llama_decode(
+                    ctx,
+                    batch
+            ) != 0) {
+
+            LOGE(
+                    "llama_decode failed during generation"
+            );
+
             break;
         }
     }
@@ -161,8 +343,13 @@ Java_com_nerfeai_MainActivity_nativeGenerate(
     llama_free(ctx);
 
     if (output.empty()) {
-        output = "No response generated. Please try again.";
+
+        output =
+                "No response generated. "
+                "Please try again.";
     }
 
-    return env->NewStringUTF(output.c_str());
+    return env->NewStringUTF(
+            output.c_str()
+    );
 }

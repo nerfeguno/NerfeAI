@@ -856,33 +856,59 @@ class MainActivity : Activity() {
      * typing/response animation. The complete answer has already been saved
      * to conversation history, so the animation is visual only.
      */
-    private fun animateResponseText(textView: TextView, fullText: String) {
-        val handler = Handler(Looper.getMainLooper())
-        val step = 2
-        val intervalMs = 14L
-        var position = 0
 
-        textView.text = ""
+	private fun animateResponseText(
+	    textView: TextView,
+	    fullText: String
+	) {
+	    val handler = Handler(Looper.getMainLooper())
 
-        val animator = object : Runnable {
-            override fun run() {
-                if (!textView.isAttachedToWindow) return
+	    // Faster for long responses.
+	    val charsPerStep = 3
+	    val intervalMs = 12L
 
-                position = (position + step).coerceAtMost(fullText.length)
-                textView.text = fullText.substring(0, position)
+	    var position = 0
 
-                scrollView.post {
-                    scrollView.fullScroll(View.FOCUS_DOWN)
-                }
+	    textView.text = ""
 
-                if (position < fullText.length) {
-                    handler.postDelayed(this, intervalMs)
-                }
-            }
-        }
+	    val animator = object : Runnable {
 
-        handler.post(animator)
-    }
+	        override fun run() {
+
+	            // Always finish the complete response.
+	            if (position >= fullText.length) {
+	                textView.text = fullText
+
+	                scrollView.post {
+	                    scrollView.fullScroll(View.FOCUS_DOWN)
+	                }
+
+	                return
+	            }
+
+	            position = minOf(
+	                position + charsPerStep,
+	                fullText.length
+	            )
+
+	            textView.text = fullText.substring(
+	                0,
+	                position
+	            )
+
+	            scrollView.post {
+	                scrollView.fullScroll(View.FOCUS_DOWN)
+	            }
+
+	            handler.postDelayed(
+	                this,
+	                intervalMs
+	            )
+	        }
+	    }
+
+	    handler.post(animator)
+	}
 
     private class SimpleTextWatcher(private val onChanged: () -> Unit) :
         android.text.TextWatcher {
