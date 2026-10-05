@@ -7,6 +7,8 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -749,7 +751,7 @@ class MainActivity : Activity() {
 
             runOnUiThread {
                 chatLayout.removeView(loadingMessage)
-                addMessage("NerfeAI", answer)
+                addMessage("NerfeAI", answer, animate = true)
                 conversationHistory += "<|im_start|>assistant\n$answer<|im_end|>\n"
                 trimConversationHistory()
                 currentChat().promptHistory = conversationHistory
@@ -776,7 +778,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addMessage(role: String, message: String): View {
+    private fun addMessage(role: String, message: String, animate: Boolean = false): View {
         val isUser = role == "You"
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -806,7 +808,7 @@ class MainActivity : Activity() {
         }
 
         val messageText = TextView(this).apply {
-            text = message
+            text = if (animate) "" else message
             textSize = 15f
             setTextColor(textColor())
             setPadding(0, dp(4), 0, 0)
@@ -841,7 +843,45 @@ class MainActivity : Activity() {
             refreshHistoryList()
         }
         scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
+
+        if (animate && message.isNotEmpty()) {
+            animateResponseText(messageText, message)
+        }
+
         return row
+    }
+
+    /**
+     * Reveals the generated answer progressively, giving NerfeAI a natural
+     * typing/response animation. The complete answer has already been saved
+     * to conversation history, so the animation is visual only.
+     */
+    private fun animateResponseText(textView: TextView, fullText: String) {
+        val handler = Handler(Looper.getMainLooper())
+        val step = 2
+        val intervalMs = 14L
+        var position = 0
+
+        textView.text = ""
+
+        val animator = object : Runnable {
+            override fun run() {
+                if (!textView.isAttachedToWindow) return
+
+                position = (position + step).coerceAtMost(fullText.length)
+                textView.text = fullText.substring(0, position)
+
+                scrollView.post {
+                    scrollView.fullScroll(View.FOCUS_DOWN)
+                }
+
+                if (position < fullText.length) {
+                    handler.postDelayed(this, intervalMs)
+                }
+            }
+        }
+
+        handler.post(animator)
     }
 
     private class SimpleTextWatcher(private val onChanged: () -> Unit) :
