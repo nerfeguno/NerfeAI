@@ -571,7 +571,7 @@ class MainActivity : Activity() {
         val footer = TextView(this).apply {
 
             text =
-                "NerfeAI can make mistakes. Runs locally on your device."
+                "NerfeAI can make mistakes. Runs locally on your device. @Efren Guno"
 
             textSize = 10f
 
