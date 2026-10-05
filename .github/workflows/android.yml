@@ -6,7 +6,6 @@ on:
   push:
     branches:
       - beta-dev
-
     tags:
       - 'v*'
 
@@ -14,25 +13,14 @@ permissions:
   contents: write
 
 jobs:
-
   build:
     name: Build NerfeAI Android APK
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
     steps:
-
-      # ==========================================================
-      # Checkout
-      # ==========================================================
-
       - name: Checkout NerfeAI project
         uses: actions/checkout@v5
-
-
-      # ==========================================================
-      # Java 17
-      # ==========================================================
 
       - name: Set up Java 17
         uses: actions/setup-java@v6
@@ -40,30 +28,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-
-      # ==========================================================
-      # Android SDK
-      # ==========================================================
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: ''
 
-
-      # ==========================================================
-      # Gradle
-      # ==========================================================
-
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-
-
-      # ==========================================================
-      # Android build components
-      # ==========================================================
 
       - name: Install Android build components
         run: |
@@ -73,23 +46,13 @@ jobs:
             "ndk;27.2.12479018" \
             "cmake;3.22.1"
 
-
-      # ==========================================================
-      # llama.cpp
-      # ==========================================================
-
-      - name: Download llama.cpp source
+      - name: Download llama.cpp
         run: |
           git clone --depth 1 \
             https://github.com/ggml-org/llama.cpp.git \
             third_party/llama.cpp
 
-
-      # ==========================================================
-      # Qwen model
-      # ==========================================================
-
-      - name: Download Qwen model into Android assets
+      - name: Download Qwen model
         run: |
           mkdir -p app/src/main/assets
 
@@ -103,19 +66,11 @@ jobs:
 
           ls -lh app/src/main/assets/nerfeai-model.gguf
 
-
-      # ==========================================================
-      # Prepare release signing key
-      #
-      # ONLY required for GitHub releases/tags.
-      # ==========================================================
-
       - name: Prepare release signing key
         if: startsWith(github.ref, 'refs/tags/')
         env:
           NERFEAI_KEYSTORE_BASE64: ${{ secrets.NERFEAI_KEYSTORE_BASE64 }}
         run: |
-
           if [ -z "$NERFEAI_KEYSTORE_BASE64" ]; then
             echo "ERROR: NERFEAI_KEYSTORE_BASE64 secret is missing."
             exit 1
@@ -123,30 +78,18 @@ jobs:
 
           mkdir -p "$RUNNER_TEMP/nerfeai"
 
-          echo "$NERFEAI_KEYSTORE_BASE64" | base64 --decode \
-            > "$RUNNER_TEMP/nerfeai/nerfeai-release.jks"
+          echo "$NERFEAI_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/nerfeai/nerfeai-release.jks"
 
           test -s "$RUNNER_TEMP/nerfeai/nerfeai-release.jks"
 
-          echo "NERFEAI_KEYSTORE_PATH=$RUNNER_TEMP/nerfeai/nerfeai-release.jks" \
-            >> "$GITHUB_ENV"
+          echo "NERFEAI_KEYSTORE_PATH=$RUNNER_TEMP/nerfeai/nerfeai-release.jks" >> "$GITHUB_ENV"
 
           echo "Release signing key prepared."
-
-
-      # ==========================================================
-      # Build DEBUG APK for beta-dev
-      # ==========================================================
 
       - name: Build development APK
         if: github.ref == 'refs/heads/beta-dev'
         run: |
           gradle --no-daemon assembleDebug
-
-
-      # ==========================================================
-      # Build SIGNED RELEASE APK for tags
-      # ==========================================================
 
       - name: Build release APK
         if: startsWith(github.ref, 'refs/tags/')
@@ -155,7 +98,6 @@ jobs:
           NERFEAI_STORE_PASSWORD: ${{ secrets.NERFEAI_STORE_PASSWORD }}
           NERFEAI_KEY_ALIAS: ${{ secrets.NERFEAI_KEY_ALIAS }}
           NERFEAI_KEY_PASSWORD: ${{ secrets.NERFEAI_KEY_PASSWORD }}
-
         run: |
           if [ -z "$NERFEAI_STORE_PASSWORD" ]; then
             echo "ERROR: NERFEAI_STORE_PASSWORD secret is missing."
@@ -174,20 +116,9 @@ jobs:
 
           gradle --no-daemon assembleRelease
 
-
-      # ==========================================================
-      # Show generated APK
-      # ==========================================================
-
       - name: Locate generated APK
         run: |
-          echo "Generated APK files:"
           find app/build/outputs/apk -type f -name "*.apk" -print
-
-
-      # ==========================================================
-      # Upload beta-dev APK
-      # ==========================================================
 
       - name: Upload development APK
         if: github.ref == 'refs/heads/beta-dev'
@@ -198,101 +129,54 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-
-      # ==========================================================
-      # Prepare GitHub Release
-      # ==========================================================
-
       - name: Prepare release files
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-
-          VERSION_NAME=$(grep -oP "versionName\s+'[^']+'" \
-            app/build.gradle |
-            head -1 |
-            sed "s/.*'\([^']*\)'/\1/")
-
-          VERSION_CODE=$(grep -oP "versionCode\s+\K[0-9]+" \
-            app/build.gradle |
-            head -1)
-
+          VERSION_NAME=$(grep -oP "versionName\s+'[^']+'" app/build.gradle | head -1 | sed "s/.*'\([^']*\)'/\1/")
+          VERSION_CODE=$(grep -oP "versionCode\s+\K[0-9]+" app/build.gradle | head -1)
           TAG_VERSION="${GITHUB_REF_NAME#v}"
 
-          echo "======================================"
-          echo "NerfeAI Release"
-          echo "======================================"
-          echo "Version name : $VERSION_NAME"
-          echo "Version code : $VERSION_CODE"
-          echo "Git tag      : $TAG_VERSION"
-          echo "======================================"
-
+          echo "Version name: $VERSION_NAME"
+          echo "Version code: $VERSION_CODE"
+          echo "Git tag: $TAG_VERSION"
 
           if [ "$VERSION_NAME" != "$TAG_VERSION" ]; then
-
             echo "ERROR: Git tag does not match versionName."
-
-            echo "Git tag:"
-            echo "$TAG_VERSION"
-
-            echo "Gradle versionName:"
-            echo "$VERSION_NAME"
-
             exit 1
-
           fi
-
 
           mkdir -p release
 
-
           APK_NAME="NerfeAI-v${VERSION_NAME}.apk"
 
-
-          cp \
-            app/build/outputs/apk/release/app-release.apk \
-            "release/$APK_NAME"
-
+          cp app/build/outputs/apk/release/app-release.apk "release/$APK_NAME"
 
           SHA256=$(sha256sum "release/$APK_NAME" | awk '{print $1}')
-
 
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${APK_NAME}"
 
           RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
 
+          printf '%s\n' \
+            '{' \
+            "  \"versionCode\": ${VERSION_CODE}," \
+            "  \"versionName\": \"${VERSION_NAME}\"," \
+            "  \"apkName\": \"${APK_NAME}\"," \
+            "  \"apkUrl\": \"${APK_URL}\"," \
+            "  \"sha256\": \"${SHA256}\"," \
+            "  \"releaseUrl\": \"${RELEASE_URL}\"" \
+            '}' \
+            > release/update.json
 
-          cat > release/update.json <<EOF
-{
-  "versionCode": ${VERSION_CODE},
-  "versionName": "${VERSION_NAME}",
-  "apkName": "${APK_NAME}",
-  "apkUrl": "${APK_URL}",
-  "sha256": "${SHA256}",
-  "releaseUrl": "${RELEASE_URL}"
-}
-EOF
-
-
-          echo ""
-          echo "Generated update.json:"
           cat release/update.json
 
-          echo ""
-          echo "Release files:"
           ls -lh release/
-
-
-      # ==========================================================
-      # Create GitHub Release
-      # ==========================================================
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-
         run: |
-
           gh release create "$GITHUB_REF_NAME" \
             release/*.apk \
             release/update.json \
