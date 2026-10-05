@@ -6,4 +6,8 @@ local.properties
 *.apk
 *.aab
 *.gguf
+*.jks
+*.keystore
+*.base64
 third_party/llama.cpp/
+
