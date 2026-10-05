@@ -107,21 +107,15 @@ android {
             minifyEnabled false
 
             /*
-             * GitHub Actions MUST use the permanent release key.
+             * Use the permanent release key when signing secrets
+             * are available. Otherwise use the debug key.
              *
-             * If CI doesn't have the signing secrets,
-             * fail instead of accidentally creating a debug-signed APK.
+             * This allows assembleDebug to run in GitHub Actions
+             * without requiring release signing secrets.
              */
             if (nerfeaiSigningReady) {
                 signingConfig signingConfigs.release
-            } else if (System.getenv("CI") == "true") {
-                throw new GradleException(
-                        "NerfeAI release signing secrets are missing."
-                )
             } else {
-                /*
-                 * Allows local development builds.
-                 */
                 signingConfig signingConfigs.debug
             }
         }
