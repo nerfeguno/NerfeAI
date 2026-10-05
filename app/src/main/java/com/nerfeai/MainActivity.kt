@@ -864,8 +864,8 @@ class MainActivity : Activity() {
 	    val handler = Handler(Looper.getMainLooper())
 
 	    // Faster for long responses.
-	    val charsPerStep = 3
-	    val intervalMs = 12L
+	    val charsPerStep = 2
+	    val intervalMs = 25L
 
 	    var position = 0
 
