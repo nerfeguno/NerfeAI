@@ -3,6 +3,17 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def nerfeaiKeystorePath = System.getenv("NERFEAI_KEYSTORE_PATH")
+def nerfeaiStorePassword = System.getenv("NERFEAI_STORE_PASSWORD")
+def nerfeaiKeyAlias = System.getenv("NERFEAI_KEY_ALIAS")
+def nerfeaiKeyPassword = System.getenv("NERFEAI_KEY_PASSWORD")
+
+def nerfeaiSigningReady =
+        nerfeaiKeystorePath &&
+        nerfeaiStorePassword &&
+        nerfeaiKeyAlias &&
+        nerfeaiKeyPassword
+
 android {
     namespace 'com.nerfeai'
     compileSdk 35
@@ -10,10 +21,28 @@ android {
 
     defaultConfig {
         applicationId 'com.nerfeai'
+
         minSdk 26
         targetSdk 35
+
         versionCode 1
         versionName '1.0'
+
+        /*
+         * GitHub repository used by the in-app updater.
+         *
+         * GitHub Actions automatically provides:
+         *
+         * GITHUB_REPOSITORY=username/repository
+         *
+         * Example:
+         * NerfeGuno/NerfeAI-Android
+         */
+        buildConfigField(
+	        "String",
+	        "UPDATE_REPOSITORY",
+	        "\"${System.getenv("GITHUB_REPOSITORY") ?: "nerfeguno/NerfeAI"}\""
+	)
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -25,6 +54,13 @@ android {
                 arguments '-DANDROID_STL=c++_shared'
             }
         }
+    }
+
+    /*
+     * Required because MainActivity uses BuildConfig.UPDATE_REPOSITORY.
+     */
+    buildFeatures {
+        buildConfig true
     }
 
     androidResources {
@@ -47,14 +83,51 @@ android {
         }
     }
 
+    /*
+     * Permanent signing key for GitHub Releases.
+     */
+    signingConfigs {
+        release {
+            if (nerfeaiSigningReady) {
+                storeFile file(nerfeaiKeystorePath)
+                storePassword nerfeaiStorePassword
+                keyAlias nerfeaiKeyAlias
+                keyPassword nerfeaiKeyPassword
+            }
+        }
+    }
+
     buildTypes {
+
         debug {
             minifyEnabled false
         }
 
         release {
             minifyEnabled false
-	    signingConfig signingConfigs.debug
+
+            /*
+             * GitHub Actions MUST use the permanent release key.
+             *
+             * If CI doesn't have the signing secrets,
+             * fail instead of accidentally creating a debug-signed APK.
+             */
+            if (nerfeaiSigningReady) {
+                signingConfig signingConfigs.release
+            } else if (System.getenv("CI") == "true") {
+                throw new GradleException(
+                        "NerfeAI release signing secrets are missing."
+                )
+            } else {
+                /*
+                 * Allows local development builds.
+                 */
+                signingConfig signingConfigs.debug
+            }
         }
     }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.19.1'
 }

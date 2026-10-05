@@ -1,16 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Required for checking GitHub releases and downloading updates -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Required for installing APK updates downloaded outside Google Play -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="false"
-	android:icon="@mipmap/ic_launcher"
-	android:roundIcon="@mipmap/ic_launcher_round"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="NerfeAI"
         android:theme="@style/Theme.NerfeAI"
         android:usesCleartextTraffic="false">
 
         <activity
             android:name=".MainActivity"
-	    android:windowSoftInputMode="adjustResize"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true"
             android:screenOrientation="unspecified">
 
@@ -20,5 +27,20 @@
             </intent-filter>
 
         </activity>
+
+        <!-- Allows Android to safely open the downloaded APK -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+
+        </provider>
+
     </application>
+
 </manifest>
