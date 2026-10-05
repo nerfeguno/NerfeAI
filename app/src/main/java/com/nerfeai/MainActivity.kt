@@ -17,6 +17,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.app.AlertDialog
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
 import java.io.File
 import java.io.FileOutputStream
 
@@ -31,11 +35,26 @@ class MainActivity : Activity() {
     private lateinit var mainLayout: LinearLayout
     private lateinit var drawer: LinearLayout
     private lateinit var drawerScrim: View
+    private lateinit var historyContainer: LinearLayout
+    private lateinit var clearHistoryButton: TextView
 
     private var modelReady = false
     private var conversationHistory = ""
     private var isDarkTheme = true
     private var lastUserMessage = ""
+    private var isRenderingMessages = false
+    private var isGenerating = false
+    private val savedChats = mutableListOf<ChatSession>()
+    private var currentChatId = ""
+    private val preferences by lazy { getSharedPreferences("nerfeai_chat_storage", Context.MODE_PRIVATE) }
+
+    private data class ChatMessage(val role: String, val text: String)
+    private data class ChatSession(
+        val id: String,
+        var title: String,
+        var promptHistory: String = "",
+        val messages: MutableList<ChatMessage> = mutableListOf()
+    )
 
     companion object {
         private const val MODEL_ASSET = "nerfeai-model.gguf"
@@ -58,9 +77,18 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        isDarkTheme = savedInstanceState?.getString("theme", "dark") != "light"
+        loadSavedChats()
         buildInterface()
-        showWelcomeMessage()
+        renderCurrentChat()
+        input.setText(savedInstanceState?.getString("draft", "") ?: "")
         prepareBundledModel()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("draft", if (::input.isInitialized) input.text.toString() else "")
+        outState.putString("theme", if (isDarkTheme) "dark" else "light")
+        super.onSaveInstanceState(outState)
     }
 
     private fun buildInterface() {
@@ -173,17 +201,20 @@ class MainActivity : Activity() {
         }
 
         sendButton = TextView(this).apply {
-            text = "↑"
-            textSize = 24f
+            // Use a plain text label instead of a special arrow glyph that may
+            // render incorrectly on some Android fonts/devices.
+            text = "Send"
+            textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            background = roundedDrawable(Color.rgb(16, 163, 127), dp(24).toFloat())
+            background = roundedDrawable(Color.rgb(16, 163, 127), dp(22).toFloat())
             isEnabled = false
             alpha = 0.55f
             contentDescription = "Send message"
+            setPadding(dp(10), 0, dp(10), 0)
             setOnClickListener { sendMessage() }
-            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(60), dp(42)).apply {
                 marginStart = dp(4)
             }
         }
@@ -262,20 +293,27 @@ class MainActivity : Activity() {
             setPadding(dp(5), dp(24), dp(5), dp(8))
         }
 
-        val currentChat = TextView(this).apply {
-            text = "  Current conversation"
-            textSize = 14f
-            setTextColor(textColor())
-            setPadding(dp(8), dp(12), dp(8), dp(12))
-            background = roundedDrawable(cardColor(), dp(10).toFloat())
+        historyContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val historyScroll = ScrollView(this).apply {
+            isFillViewport = false
+            addView(historyContainer)
+        }
+
+        clearHistoryButton = drawerAction("Delete all chat history") {
+            confirmClearAllHistory()
+        }.apply {
+            setTextColor(if (isDarkTheme) Color.rgb(255, 130, 130) else Color.rgb(180, 40, 40))
         }
 
         drawer.addView(drawerHeader)
         drawer.addView(drawerNewChat)
         drawer.addView(drawerTheme)
         drawer.addView(chatsLabel)
-        drawer.addView(currentChat)
-        drawer.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
+        drawer.addView(historyScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        drawer.addView(clearHistoryButton)
 
         root.addView(mainLayout, FrameLayout.LayoutParams(-1, -1))
         root.addView(drawerScrim, FrameLayout.LayoutParams(-1, -1))
@@ -304,11 +342,195 @@ class MainActivity : Activity() {
     }
 
     private fun startNewChat() {
+        if (isGenerating) {
+            Toast.makeText(this, "Please wait for the current response to finish.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        currentChatId = UUID.randomUUID().toString()
         conversationHistory = ""
         lastUserMessage = ""
         chatLayout.removeAllViews()
         showWelcomeMessage()
         input.text.clear()
+        persistChats()
+        refreshHistoryList()
+        toggleDrawer(false)
+    }
+
+    private fun currentChat(): ChatSession {
+        var chat = savedChats.firstOrNull { it.id == currentChatId }
+        if (chat == null) {
+            chat = ChatSession(UUID.randomUUID().toString(), "New chat")
+            currentChatId = chat.id
+            savedChats.add(0, chat)
+        }
+        return chat
+    }
+
+    private fun loadSavedChats() {
+        savedChats.clear()
+        try {
+            val raw = preferences.getString("chats_json", "[]") ?: "[]"
+            val array = JSONArray(raw)
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                val chat = ChatSession(
+                    id = item.optString("id", UUID.randomUUID().toString()),
+                    title = item.optString("title", "Conversation"),
+                    promptHistory = item.optString("promptHistory", "")
+                )
+                val messages = item.optJSONArray("messages") ?: JSONArray()
+                for (j in 0 until messages.length()) {
+                    val message = messages.getJSONObject(j)
+                    chat.messages.add(ChatMessage(message.optString("role"), message.optString("text")))
+                }
+                if (chat.messages.isNotEmpty()) savedChats.add(chat)
+            }
+            currentChatId = preferences.getString("current_chat_id", "") ?: ""
+        } catch (_: Exception) {
+            savedChats.clear()
+            currentChatId = ""
+        }
+        if (savedChats.none { it.id == currentChatId }) {
+            currentChatId = UUID.randomUUID().toString()
+        }
+    }
+
+    private fun persistChats() {
+        val array = JSONArray()
+        savedChats.filter { it.messages.isNotEmpty() }.forEach { chat ->
+            val item = JSONObject()
+            item.put("id", chat.id)
+            item.put("title", chat.title)
+            item.put("promptHistory", chat.promptHistory)
+            val messages = JSONArray()
+            chat.messages.forEach { message ->
+                messages.put(JSONObject().put("role", message.role).put("text", message.text))
+            }
+            item.put("messages", messages)
+            array.put(item)
+        }
+        preferences.edit()
+            .putString("chats_json", array.toString())
+            .putString("current_chat_id", currentChatId)
+            .apply()
+    }
+
+    private fun renderCurrentChat() {
+        val chat = savedChats.firstOrNull { it.id == currentChatId }
+        conversationHistory = chat?.promptHistory ?: ""
+        lastUserMessage = chat?.messages?.lastOrNull { it.role == "You" }?.text ?: ""
+        chatLayout.removeAllViews()
+        if (chat == null || chat.messages.isEmpty()) {
+            showWelcomeMessage()
+        } else {
+            isRenderingMessages = true
+            chat.messages.forEach { addMessage(it.role, it.text) }
+            isRenderingMessages = false
+        }
+        refreshHistoryList()
+    }
+
+    private fun openChat(chatId: String) {
+        if (isGenerating) {
+            Toast.makeText(this, "Please wait for the current response to finish.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        currentChatId = chatId
+        persistChats()
+        renderCurrentChat()
+        toggleDrawer(false)
+        scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun refreshHistoryList() {
+        if (!::historyContainer.isInitialized) return
+        historyContainer.removeAllViews()
+        val ordered = savedChats.filter { it.messages.isNotEmpty() }
+        if (ordered.isEmpty()) {
+            historyContainer.addView(TextView(this).apply {
+                text = "No saved chats yet"
+                textSize = 13f
+                setTextColor(secondaryTextColor())
+                setPadding(dp(8), dp(10), dp(8), dp(10))
+            })
+        }
+        ordered.forEach { chat ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val titleButton = TextView(this).apply {
+                text = (if (chat.id == currentChatId) "●  " else "   ") + chat.title
+                textSize = 13f
+                setTextColor(textColor())
+                setPadding(dp(8), dp(12), dp(4), dp(12))
+                maxLines = 2
+                background = roundedDrawable(
+                    if (chat.id == currentChatId) cardColor() else panelColor(), dp(8).toFloat()
+                )
+                setOnClickListener { openChat(chat.id) }
+            }
+            val deleteButton = TextView(this).apply {
+                text = "×"
+                textSize = 22f
+                gravity = Gravity.CENTER
+                setTextColor(if (isDarkTheme) Color.rgb(255, 130, 130) else Color.rgb(180, 40, 40))
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                contentDescription = "Delete ${chat.title}"
+                setOnClickListener { confirmDeleteChat(chat.id, chat.title) }
+            }
+            row.addView(titleButton, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(deleteButton)
+            historyContainer.addView(row)
+        }
+    }
+
+    private fun confirmDeleteChat(chatId: String, title: String) {
+        if (isGenerating) {
+            Toast.makeText(this, "Please wait for the current response to finish.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Delete conversation?")
+            .setMessage("Delete ‘$title’? This cannot be undone.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                savedChats.removeAll { it.id == chatId }
+                if (currentChatId == chatId) {
+                    currentChatId = UUID.randomUUID().toString()
+                    conversationHistory = ""
+                    lastUserMessage = ""
+                    chatLayout.removeAllViews()
+                    showWelcomeMessage()
+                }
+                persistChats()
+                refreshHistoryList()
+            }
+            .show()
+    }
+
+    private fun confirmClearAllHistory() {
+        if (isGenerating) {
+            Toast.makeText(this, "Please wait for the current response to finish.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Delete all chat history?")
+            .setMessage("All saved conversations will be permanently removed from this device.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete all") { _, _ ->
+                savedChats.clear()
+                currentChatId = UUID.randomUUID().toString()
+                conversationHistory = ""
+                lastUserMessage = ""
+                chatLayout.removeAllViews()
+                showWelcomeMessage()
+                persistChats()
+                refreshHistoryList()
+                toggleDrawer(false)
+            }
+            .show()
     }
 
     private fun showWelcomeMessage() {
@@ -352,27 +574,9 @@ class MainActivity : Activity() {
     }
 
     private fun rebuildForTheme() {
-        // Preserve the visible messages and draft while rebuilding the colors.
-        val savedHistory = conversationHistory
         val savedDraft = input.text.toString()
-        val savedMessages = mutableListOf<Pair<String, String>>()
-
-        for (i in 0 until chatLayout.childCount) {
-            val row = chatLayout.getChildAt(i) as? LinearLayout ?: continue
-            val bubble = row.getChildAt(0) as? LinearLayout ?: continue
-            if (bubble.childCount < 2) continue
-            val role = (bubble.getChildAt(0) as? TextView)?.text?.toString() ?: continue
-            val message = (bubble.getChildAt(1) as? TextView)?.text?.toString() ?: continue
-            savedMessages.add(Pair(role, message))
-        }
-
         buildInterface()
-        conversationHistory = savedHistory
-        if (savedMessages.isEmpty()) {
-            showWelcomeMessage()
-        } else {
-            savedMessages.forEach { (role, message) -> addMessage(role, message) }
-        }
+        renderCurrentChat()
         input.setText(savedDraft)
         statusText.text = if (modelReady) "Qwen loaded • Offline mode ready" else "Preparing offline assistant..."
         sendButton.isEnabled = modelReady && input.text.toString().trim().isNotEmpty()
@@ -466,6 +670,7 @@ class MainActivity : Activity() {
     }
 
     private fun sendMessage() {
+        if (isGenerating) return
         if (!modelReady) {
             Toast.makeText(this, "The AI model is still loading.", Toast.LENGTH_SHORT).show()
             return
@@ -480,8 +685,9 @@ class MainActivity : Activity() {
         val keyboard = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         keyboard.hideSoftInputFromWindow(input.windowToken, 0)
 
-        addMessage("You", userText)
         conversationHistory += "<|im_start|>user\n$userText<|im_end|>\n"
+        currentChat().promptHistory = conversationHistory
+        addMessage("You", userText)
 
         val prompt =
             "<|im_start|>system\n" +
@@ -490,6 +696,7 @@ class MainActivity : Activity() {
             conversationHistory +
             "<|im_start|>assistant\n"
 
+        isGenerating = true
         sendButton.isEnabled = false
         sendButton.alpha = 0.55f
         statusText.text = "NerfeAI is thinking..."
@@ -507,6 +714,10 @@ class MainActivity : Activity() {
                 addMessage("NerfeAI", answer)
                 conversationHistory += "<|im_start|>assistant\n$answer<|im_end|>\n"
                 trimConversationHistory()
+                currentChat().promptHistory = conversationHistory
+                persistChats()
+                refreshHistoryList()
+                isGenerating = false
                 sendButton.isEnabled = modelReady && input.text.toString().trim().isNotEmpty()
                 sendButton.alpha = if (sendButton.isEnabled) 1f else 0.55f
                 statusText.text = "Qwen loaded • Offline mode ready"
@@ -577,6 +788,20 @@ class MainActivity : Activity() {
         })
 
         chatLayout.addView(row)
+        if (!isRenderingMessages && message != "Thinking…") {
+            val chat = currentChat()
+            chat.messages.add(ChatMessage(role, message))
+            if (role == "You") {
+                if (chat.title == "New chat") {
+                    chat.title = message.replace("\n", " ").trim().take(36).ifEmpty { "New chat" }
+                }
+                savedChats.remove(chat)
+                savedChats.add(0, chat)
+            }
+            chat.promptHistory = conversationHistory
+            persistChats()
+            refreshHistoryList()
+        }
         scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
         return row
     }
