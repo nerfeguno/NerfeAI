@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -77,6 +78,12 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Allow the available app area to resize when the keyboard opens.
+        window.setSoftInputMode(
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
+
         isDarkTheme = savedInstanceState?.getString("theme", "dark") != "light"
         loadSavedChats()
         buildInterface()
@@ -96,6 +103,26 @@ class MainActivity : Activity() {
 
         root = FrameLayout(this).apply {
             setBackgroundColor(backgroundColor())
+        }
+
+        // Android 15+ enforces edge-to-edge for many target SDK configurations.
+        // On Android 11+ we handle system-bar and keyboard insets ourselves so
+        // the title bar stays below the status bar and the composer stays above
+        // the keyboard. Older Android versions continue using adjustResize.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            root.setOnApplyWindowInsetsListener { view, insets ->
+                val systemBars = insets.getInsets(android.view.WindowInsets.Type.systemBars())
+                val ime = insets.getInsets(android.view.WindowInsets.Type.ime())
+                view.setPadding(
+                    0,
+                    systemBars.top,
+                    0,
+                    maxOf(systemBars.bottom, ime.bottom)
+                )
+                insets
+            }
+            root.post { root.requestApplyInsets() }
         }
 
         mainLayout = LinearLayout(this).apply {
@@ -590,10 +617,21 @@ class MainActivity : Activity() {
     private fun secondaryTextColor() = if (isDarkTheme) Color.rgb(165, 165, 165) else Color.rgb(105, 105, 105)
 
     private fun applySystemBarColors() {
-        window.statusBarColor = if (isDarkTheme) DARK_BG else LIGHT_BG
-        window.navigationBarColor = if (isDarkTheme) DARK_BG else LIGHT_BG
+        val barColor = if (isDarkTheme) DARK_BG else LIGHT_BG
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // The root view draws behind the bars; its insets padding keeps the
+            // app content clear of the status bar, navigation bar, and IME.
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
+        } else {
+            window.statusBarColor = barColor
+            window.navigationBarColor = barColor
+        }
+
         window.decorView.systemUiVisibility =
-            if (isDarkTheme) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            if (isDarkTheme) 0 else
+                (View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR)
     }
 
     private fun roundedDrawable(color: Int, radius: Float, strokeColor: Int? = null): GradientDrawable {
