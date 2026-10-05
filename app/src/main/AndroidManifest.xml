@@ -2,8 +2,10 @@
 
     <application
         android:allowBackup="false"
+	android:icon="@mipmap/ic_launcher"
+	android:roundIcon="@mipmap/ic_launcher_round"
         android:label="NerfeAI"
-        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:theme="@style/Theme.NerfeAI"
         android:usesCleartextTraffic="false">
 
         <activity
