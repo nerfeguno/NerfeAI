@@ -99,6 +99,14 @@ class MainActivity : Activity() {
         private const val MODEL_ASSET = "nerfeai-model.gguf"
         private const val MODEL_FILE = "nerfeai-model.gguf"
 
+        // Long conversations are capped so the UI, JSON storage, and
+        // native llama.cpp prompt cannot grow without bounds.
+        private const val MAX_VISIBLE_MESSAGES = 24
+        private const val MAX_SAVED_MESSAGES = 100
+        private const val MAX_PROMPT_MESSAGES = 8
+        private const val MAX_PROMPT_CHARS = 9000
+        private const val MAX_MESSAGE_CHARS = 12000
+
         private val DARK_BG = Color.rgb(33, 33, 33)
         private val DARK_PANEL = Color.rgb(42, 42, 42)
         private val DARK_CARD = Color.rgb(48, 48, 48)
@@ -941,7 +949,10 @@ class MainActivity : Activity() {
                     ) ?: JSONArray()
 
 
-                for (j in 0 until messages.length()) {
+                val startIndex =
+                    (messages.length() - MAX_SAVED_MESSAGES).coerceAtLeast(0)
+
+                for (j in startIndex until messages.length()) {
 
                     val message =
                         messages.getJSONObject(j)
@@ -949,7 +960,7 @@ class MainActivity : Activity() {
                     chat.messages.add(
                         ChatMessage(
                             message.optString("role"),
-                            message.optString("text")
+                            message.optString("text").take(MAX_MESSAGE_CHARS)
                         )
                     )
                 }
@@ -989,71 +1000,40 @@ class MainActivity : Activity() {
 
     private fun persistChats() {
 
+        // Keep the persistent JSON bounded. SharedPreferences is not a database,
+        // so unbounded chat history can eventually cause slow writes or crashes.
         val array = JSONArray()
 
         savedChats
-            .filter {
-                it.messages.isNotEmpty()
-            }
+            .filter { it.messages.isNotEmpty() }
+            .take(MAX_SAVED_MESSAGES)
             .forEach { chat ->
 
-                val item =
-                    JSONObject()
+                val item = JSONObject()
+                    .put("id", chat.id)
+                    .put("title", chat.title)
+                    .put("promptHistory", chat.promptHistory.take(MAX_PROMPT_CHARS))
 
-                item.put(
-                    "id",
-                    chat.id
-                )
+                val messages = JSONArray()
 
-                item.put(
-                    "title",
-                    chat.title
-                )
+                chat.messages
+                    .takeLast(MAX_SAVED_MESSAGES)
+                    .forEach { message ->
+                        messages.put(
+                            JSONObject()
+                                .put("role", message.role)
+                                .put("text", message.text.take(MAX_MESSAGE_CHARS))
+                        )
+                    }
 
-                item.put(
-                    "promptHistory",
-                    chat.promptHistory
-                )
-
-
-                val messages =
-                    JSONArray()
-
-                chat.messages.forEach { message ->
-
-                    messages.put(
-                        JSONObject()
-                            .put(
-                                "role",
-                                message.role
-                            )
-                            .put(
-                                "text",
-                                message.text
-                            )
-                    )
-                }
-
-
-                item.put(
-                    "messages",
-                    messages
-                )
-
+                item.put("messages", messages)
                 array.put(item)
             }
 
-
         preferences
             .edit()
-            .putString(
-                "chats_json",
-                array.toString()
-            )
-            .putString(
-                "current_chat_id",
-                currentChatId
-            )
+            .putString("chats_json", array.toString())
+            .putString("current_chat_id", currentChatId)
             .apply()
     }
 
@@ -1070,19 +1050,12 @@ class MainActivity : Activity() {
 
         lastUserMessage =
             chat?.messages
-                ?.lastOrNull {
-                    it.role == "You"
-                }
+                ?.lastOrNull { it.role == "You" }
                 ?.text ?: ""
-
 
         chatLayout.removeAllViews()
 
-
-        if (
-            chat == null ||
-            chat.messages.isEmpty()
-        ) {
+        if (chat == null || chat.messages.isEmpty()) {
 
             showWelcomeMessage()
 
@@ -1090,18 +1063,24 @@ class MainActivity : Activity() {
 
             isRenderingMessages = true
 
-            chat.messages.forEach {
-                addMessage(
-                    it.role,
-                    it.text
-                )
+            // Never recreate hundreds/thousands of TextViews when a long chat
+            // is opened. The complete saved chat remains capped in storage,
+            // while the UI only renders the most recent messages.
+            val visibleMessages =
+                chat.messages.takeLast(MAX_VISIBLE_MESSAGES)
+
+            visibleMessages.forEach {
+                addMessage(it.role, it.text)
             }
 
             isRenderingMessages = false
         }
 
-
         refreshHistoryList()
+
+        scrollView.post {
+            scrollView.fullScroll(View.FOCUS_DOWN)
+        }
     }
 
 
@@ -1821,165 +1800,142 @@ class MainActivity : Activity() {
 
     private fun sendMessage() {
 
-        if (isGenerating) {
-            return
-        }
-
+        if (isGenerating) return
 
         if (!modelReady) {
-
             Toast.makeText(
                 this,
                 "The AI model is still loading.",
                 Toast.LENGTH_SHORT
             ).show()
-
             return
         }
 
+        var userText = input.text.toString().trim()
 
-        val userText =
-            input.text
-                .toString()
-                .trim()
+        if (userText.isEmpty()) return
 
-
-        if (userText.isEmpty()) {
-            return
+        // Prevent a single pasted message from consuming the entire native
+        // context or making the persisted JSON unexpectedly large.
+        if (userText.length > MAX_MESSAGE_CHARS) {
+            userText = userText.take(MAX_MESSAGE_CHARS)
+            Toast.makeText(
+                this,
+                "Message was shortened to keep the conversation stable.",
+                Toast.LENGTH_SHORT
+            ).show()
         }
 
-
-        lastUserMessage =
-            userText
-
+        lastUserMessage = userText
         input.text.clear()
 
-
         val keyboard =
-            getSystemService(
-                Context.INPUT_METHOD_SERVICE
-            ) as InputMethodManager
+            getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
 
+        keyboard.hideSoftInputFromWindow(input.windowToken, 0)
 
-        keyboard.hideSoftInputFromWindow(
-            input.windowToken,
-            0
-        )
+        val chat = currentChat()
 
+        // Store the user message first, then build a bounded prompt from only
+        // the latest turns. This fixes the old behavior where conversationHistory
+        // could grow before nativeGenerate() was called.
+        chat.messages.add(ChatMessage("You", userText))
 
-        conversationHistory +=
-            "<|im_start|>user\n" +
-                    userText +
-                    "<|im_end|>\n"
+        if (chat.title == "New chat") {
+            chat.title = userText
+                .replace("\n", " ")
+                .trim()
+                .take(36)
+                .ifEmpty { "New chat" }
+        }
 
+        savedChats.remove(chat)
+        savedChats.add(0, chat)
 
-        currentChat().promptHistory =
-            conversationHistory
+        // Keep only a bounded amount of saved data.
+        if (chat.messages.size > MAX_SAVED_MESSAGES) {
+            repeat(chat.messages.size - MAX_SAVED_MESSAGES) {
+                chat.messages.removeAt(0)
+            }
+        }
 
+        conversationHistory =
+            buildConversationHistory(chat.messages)
 
-        addMessage(
-            "You",
-            userText
-        )
+        chat.promptHistory = conversationHistory
 
+        // Render the newly added user message directly. addMessage() is told
+        // not to save it again because it is already in chat.messages.
+        addMessage("You", userText, persist = false)
 
-        val prompt =
-            "<|im_start|>system\n" +
-                    "You are NerfeAI, a helpful offline AI assistant. Answer clearly and honestly.\n" +
-                    "<|im_end|>\n" +
-                    conversationHistory +
-                    "<|im_start|>assistant\n"
-
+        val prompt = buildNativePrompt(chat.messages)
 
         isGenerating = true
-
         sendButton.isEnabled = false
-
         sendButton.alpha = 0.55f
+        statusText.text = "NerfeAI is thinking..."
 
-        statusText.text =
-            "NerfeAI is thinking..."
+        val loadingMessage = addMessage(
+            "NerfeAI",
+            "Thinking…",
+            persist = false
+        )
 
-
-        val loadingMessage =
-            addMessage(
-                "NerfeAI",
-                "Thinking…"
-            )
-
+        persistChats()
+        refreshHistoryList()
 
         Thread {
 
-            val answer =
-                try {
-
-                    nativeGenerate(
-                        prompt
-                    )
-                        .trim()
-                        .ifEmpty {
-                            "I couldn't generate a response. Please try again."
-                        }
-
-                } catch (e: Exception) {
-
-                    "Generation failed: ${
-                        e.message
-                            ?: "unknown error"
-                    }"
-                }
-
+            val answer = try {
+                nativeGenerate(prompt)
+                    .trim()
+                    .ifEmpty {
+                        "I couldn't generate a response. Please try again."
+                    }
+            } catch (e: Exception) {
+                "Generation failed: ${e.message ?: "unknown error"}"
+            }
 
             runOnUiThread {
 
-                chatLayout.removeView(
-                    loadingMessage
-                )
+                chatLayout.removeView(loadingMessage)
 
+                val safeAnswer = answer.take(MAX_MESSAGE_CHARS)
 
+                // Add the assistant response once.
                 addMessage(
                     "NerfeAI",
-                    answer,
-                    animate = true
+                    safeAnswer,
+                    animate = true,
+                    persist = false
                 )
 
+                chat.messages.add(
+                    ChatMessage("NerfeAI", safeAnswer)
+                )
 
-                conversationHistory +=
-                    "<|im_start|>assistant\n" +
-                            answer +
-                            "<|im_end|>\n"
+                if (chat.messages.size > MAX_SAVED_MESSAGES) {
+                    repeat(chat.messages.size - MAX_SAVED_MESSAGES) {
+                        chat.messages.removeAt(0)
+                    }
+                }
 
+                conversationHistory =
+                    buildConversationHistory(chat.messages)
 
-                trimConversationHistory()
-
-
-                currentChat().promptHistory =
-                    conversationHistory
-
+                chat.promptHistory = conversationHistory
 
                 persistChats()
-
                 refreshHistoryList()
-
 
                 isGenerating = false
 
-
                 sendButton.isEnabled =
                     modelReady &&
-                            input.text
-                                .toString()
-                                .trim()
-                                .isNotEmpty()
-
+                            input.text.toString().trim().isNotEmpty()
 
                 sendButton.alpha =
-                    if (sendButton.isEnabled) {
-                        1f
-                    } else {
-                        0.55f
-                    }
-
+                    if (sendButton.isEnabled) 1f else 0.55f
 
                 statusText.text =
                     "Qwen loaded • Offline mode ready"
@@ -1989,40 +1945,71 @@ class MainActivity : Activity() {
     }
 
 
+    private fun buildConversationHistory(
+        messages: List<ChatMessage>
+    ): String {
+
+        val selected = mutableListOf<String>()
+        var length = 0
+
+        // Walk backwards so the newest messages are always preferred.
+        messages.takeLast(MAX_PROMPT_MESSAGES).asReversed().forEach { message ->
+            val role = if (message.role == "You") "user" else "assistant"
+            val block =
+                "<|im_start|>$role\n" +
+                        message.text.take(MAX_MESSAGE_CHARS) +
+                        "<|im_end|>\n"
+
+            if (length + block.length <= MAX_PROMPT_CHARS) {
+                selected.add(block)
+                length += block.length
+            }
+        }
+
+        return selected.asReversed().joinToString("")
+    }
+
+
+    private fun buildNativePrompt(
+        messages: List<ChatMessage>
+    ): String {
+
+        val recent = messages.takeLast(MAX_PROMPT_MESSAGES).toMutableList()
+
+        // Drop oldest messages until the prompt is safely below the native
+        // character budget. The newest user message is always retained.
+        while (recent.size > 1) {
+            val history = buildConversationHistory(recent)
+            val prompt =
+                "<|im_start|>system\n" +
+                        "You are NerfeAI, a helpful offline AI assistant. Answer clearly and honestly.\n" +
+                        "<|im_end|>\n" +
+                        history +
+                        "<|im_start|>assistant\n"
+
+            if (prompt.length <= MAX_PROMPT_CHARS) {
+                return prompt
+            }
+
+            recent.removeAt(0)
+        }
+
+        val history = buildConversationHistory(recent)
+        return
+            "<|im_start|>system\n" +
+                    "You are NerfeAI, a helpful offline AI assistant. Answer clearly and honestly.\n" +
+                    "<|im_end|>\n" +
+                    history +
+                    "<|im_start|>assistant\n"
+    }
+
+
     private fun trimConversationHistory() {
-
-        val marker =
-            "<|im_start|>user\n"
-
-        val starts =
-            mutableListOf<Int>()
-
-
-        var index =
-            conversationHistory.indexOf(
-                marker
-            )
-
-
-        while (index >= 0) {
-
-            starts.add(index)
-
-            index =
-                conversationHistory.indexOf(
-                    marker,
-                    index + marker.length
-                )
-        }
-
-
-        if (starts.size > 4) {
-
-            conversationHistory =
-                conversationHistory.substring(
-                    starts[starts.size - 4]
-                )
-        }
+        // Kept for compatibility with older saved data. New prompts are built
+        // directly from bounded ChatMessage objects, so this is no longer the
+        // primary protection against oversized native prompts.
+        conversationHistory =
+            conversationHistory.takeLast(MAX_PROMPT_CHARS)
     }
 
 
@@ -2033,244 +2020,107 @@ class MainActivity : Activity() {
     private fun addMessage(
         role: String,
         message: String,
-        animate: Boolean = false
+        animate: Boolean = false,
+        persist: Boolean = true
     ): View {
 
-        val isUser =
-            role == "You"
+        val isUser = role == "You"
 
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = if (isUser) Gravity.END else Gravity.START
+            setPadding(0, dp(7), 0, dp(7))
+        }
 
-        val row =
-            LinearLayout(this).apply {
+        val bubble = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(11), dp(14), dp(11))
+            background = roundedDrawable(
+                when {
+                    isUser && isDarkTheme -> Color.rgb(45, 75, 68)
+                    isUser -> Color.rgb(220, 242, 234)
+                    isDarkTheme -> DARK_CARD
+                    else -> LIGHT_CARD
+                },
+                dp(18).toFloat()
+            )
+        }
 
-                orientation =
-                    LinearLayout.HORIZONTAL
+        val roleText = TextView(this).apply {
+            text = if (isUser) "You" else "NerfeAI"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(16, 163, 127))
+        }
 
-                gravity =
-                    if (isUser) {
-                        Gravity.END
-                    } else {
-                        Gravity.START
-                    }
-
-                setPadding(
-                    0,
-                    dp(7),
-                    0,
-                    dp(7)
-                )
-            }
-
-
-        val bubble =
-            LinearLayout(this).apply {
-
-                orientation =
-                    LinearLayout.VERTICAL
-
-                setPadding(
-                    dp(14),
-                    dp(11),
-                    dp(14),
-                    dp(11)
-                )
-
-
-                background =
-                    roundedDrawable(
-
-                        when {
-
-                            isUser &&
-                                    isDarkTheme ->
-                                Color.rgb(
-                                    45,
-                                    75,
-                                    68
-                                )
-
-                            isUser ->
-                                Color.rgb(
-                                    220,
-                                    242,
-                                    234
-                                )
-
-                            isDarkTheme ->
-                                DARK_CARD
-
-                            else ->
-                                LIGHT_CARD
-                        },
-
-                        dp(18).toFloat()
-                    )
-            }
-
-
-        val roleText =
-            TextView(this).apply {
-
-                text =
-                    if (isUser) {
-                        "You"
-                    } else {
-                        "NerfeAI"
-                    }
-
-                textSize = 12f
-
-                typeface =
-                    Typeface.DEFAULT_BOLD
-
-                setTextColor(
-                    Color.rgb(
-                        16,
-                        163,
-                        127
-                    )
-                )
-            }
-
-
-        val messageText =
-            TextView(this).apply {
-
-                text =
-                    if (animate) {
-                        ""
-                    } else {
-                        message
-                    }
-
-                textSize = 15f
-
-                setTextColor(
-                    textColor()
-                )
-
-                setPadding(
-                    0,
-                    dp(4),
-                    0,
-                    0
-                )
-
-                setTextIsSelectable(true)
-
-                setLineSpacing(
-                    dp(2).toFloat(),
-                    1f
-                )
-            }
-
+        val messageText = TextView(this).apply {
+            text = if (animate) "" else message
+            textSize = 15f
+            setTextColor(textColor())
+            setPadding(0, dp(4), 0, 0)
+            setTextIsSelectable(true)
+            setLineSpacing(dp(2).toFloat(), 1f)
+        }
 
         bubble.addView(roleText)
-
         bubble.addView(messageText)
-
 
         row.addView(
             bubble,
             LinearLayout.LayoutParams(
                 if (isUser) {
                     dp(300).coerceAtMost(
-                        resources.displayMetrics.widthPixels -
-                                dp(80)
+                        resources.displayMetrics.widthPixels - dp(80)
                     )
                 } else {
                     -1
                 },
                 -2
             ).apply {
-
-                if (isUser) {
-                    marginStart = dp(32)
-                } else {
-                    marginEnd = dp(12)
-                }
+                if (isUser) marginStart = dp(32) else marginEnd = dp(12)
             }
         )
 
-
         chatLayout.addView(row)
 
-
-        /*
-         * Don't save messages while simply rendering existing history.
-         */
+        // Only mutate storage when this is a genuinely new message. Rendering
+        // an existing conversation must never duplicate its messages.
         if (
             !isRenderingMessages &&
+            persist &&
             message != "Thinking…"
         ) {
-
-            val chat =
-                currentChat()
-
-
+            val chat = currentChat()
             chat.messages.add(
-                ChatMessage(
-                    role,
-                    message
-                )
+                ChatMessage(role, message.take(MAX_MESSAGE_CHARS))
             )
 
-
-            if (role == "You") {
-
-                if (chat.title == "New chat") {
-
-                    chat.title =
-                        message
-                            .replace(
-                                "\n",
-                                " "
-                            )
-                            .trim()
-                            .take(36)
-                            .ifEmpty {
-                                "New chat"
-                            }
-                }
-
-
-                savedChats.remove(chat)
-
-                savedChats.add(
-                    0,
-                    chat
-                )
+            if (role == "You" && chat.title == "New chat") {
+                chat.title = message
+                    .replace("\n", " ")
+                    .trim()
+                    .take(36)
+                    .ifEmpty { "New chat" }
             }
 
+            if (chat.messages.size > MAX_SAVED_MESSAGES) {
+                repeat(chat.messages.size - MAX_SAVED_MESSAGES) {
+                    chat.messages.removeAt(0)
+                }
+            }
 
-            chat.promptHistory =
-                conversationHistory
-
-
+            chat.promptHistory = buildConversationHistory(chat.messages)
             persistChats()
-
             refreshHistoryList()
         }
 
-
         scrollView.post {
-            scrollView.fullScroll(
-                View.FOCUS_DOWN
-            )
+            scrollView.fullScroll(View.FOCUS_DOWN)
         }
 
-
-        if (
-            animate &&
-            message.isNotEmpty()
-        ) {
-
-            animateResponseText(
-                messageText,
-                message
-            )
+        if (animate && message.isNotEmpty()) {
+            animateResponseText(messageText, message)
         }
-
 
         return row
     }
@@ -2285,72 +2135,29 @@ class MainActivity : Activity() {
         fullText: String
     ) {
 
-        val handler =
-            Handler(
-                Looper.getMainLooper()
-            )
-
-
-        /*
-         * Slightly slower typing animation.
-         */
-        val step = 2
-
+        val handler = Handler(Looper.getMainLooper())
+        val step = 4
         val intervalMs = 25L
-
         var position = 0
-
 
         textView.text = ""
 
+        val animator = object : Runnable {
+            override fun run() {
+                if (!textView.isAttachedToWindow) return
 
-        val animator =
-            object : Runnable {
+                position = (position + step).coerceAtMost(fullText.length)
+                textView.text = fullText.substring(0, position)
 
-                override fun run() {
-
-                    if (
-                        !textView.isAttachedToWindow
-                    ) {
-                        return
-                    }
-
-
-                    position =
-                        (
-                            position + step
-                        ).coerceAtMost(
-                            fullText.length
-                        )
-
-
-                    textView.text =
-                        fullText.substring(
-                            0,
-                            position
-                        )
-
-
+                if (position < fullText.length) {
+                    handler.postDelayed(this, intervalMs)
+                } else {
                     scrollView.post {
-                        scrollView.fullScroll(
-                            View.FOCUS_DOWN
-                        )
-                    }
-
-
-                    if (
-                        position <
-                        fullText.length
-                    ) {
-
-                        handler.postDelayed(
-                            this,
-                            intervalMs
-                        )
+                        scrollView.fullScroll(View.FOCUS_DOWN)
                     }
                 }
             }
-
+        }
 
         handler.post(animator)
     }
