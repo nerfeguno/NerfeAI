@@ -1982,10 +1982,10 @@ class MainActivity : Activity() {
             val history = buildConversationHistory(recent)
             val prompt =
                 "<|im_start|>system\n" +
-                        "You are NerfeAI, a helpful offline AI assistant. Answer clearly and honestly.\n" +
-                        "<|im_end|>\n" +
-                        history +
-                        "<|im_start|>assistant\n"
+                "You are NerfeAI, a helpful offline AI assistant. Answer clearly and honestly.\n" +
+                "<|im_end|>\n" +
+                history +
+                "<|im_start|>assistant\n"
 
             if (prompt.length <= MAX_PROMPT_CHARS) {
                 return prompt
@@ -1995,12 +1995,14 @@ class MainActivity : Activity() {
         }
 
         val history = buildConversationHistory(recent)
-        return
+
+        return (
             "<|im_start|>system\n" +
-                    "You are NerfeAI, a helpful offline AI assistant. Answer clearly and honestly.\n" +
-                    "<|im_end|>\n" +
-                    history +
-                    "<|im_start|>assistant\n"
+            "You are NerfeAI, a helpful offline AI assistant. Answer clearly and honestly.\n" +
+            "<|im_end|>\n" +
+            history +
+            "<|im_start|>assistant\n"
+        )
     }
 
 
