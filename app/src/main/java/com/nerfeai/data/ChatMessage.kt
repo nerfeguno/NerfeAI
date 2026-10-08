@@ -1,0 +1,6 @@
+package com.nerfeai.data
+
+data class ChatMessage(
+    val role: String,
+    val text: String
+)

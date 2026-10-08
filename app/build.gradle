@@ -29,25 +29,118 @@ android {
         versionName '1.3'
 
         /*
-         * GitHub repository used by the in-app updater.
-         *
-         * GitHub Actions automatically provides:
-         *
-         * GITHUB_REPOSITORY=username/repository
+         * ============================================================
+         * Automatic release notes from Git commits
+         * ============================================================
          *
          * Example:
-         * NerfeGuno/NerfeAI-Android
+         *
+         * v1.2
+         *    ↓
+         * commits
+         *    ↓
+         * v1.3
+         *
+         * The commits between the previous version tag and the
+         * current build are automatically placed into
+         * BuildConfig.UPDATE_NOTES.
+         */
+
+        def gitTag = "v${versionName}"
+        def previousTag = ""
+
+        try {
+            previousTag = ["git", "describe", "--tags", "--abbrev=0", "${gitTag}^"]
+                    .execute(null, rootDir)
+                    .text
+                    .trim()
+        } catch (Exception ignored) {
+            previousTag = ""
+        }
+
+        def updateNotes = ""
+
+        try {
+            def gitCommand
+
+            if (previousTag) {
+                gitCommand = [
+                        "git",
+                        "log",
+                        "--pretty=format:%s",
+                        "${previousTag}..HEAD"
+                ]
+            } else {
+                gitCommand = [
+                        "git",
+                        "log",
+                        "--pretty=format:%s",
+                        "-10"
+                ]
+            }
+
+            def gitOutput = gitCommand
+                    .execute(null, rootDir)
+                    .text
+                    .trim()
+
+            if (gitOutput) {
+                updateNotes = gitOutput
+                        .split("\\r?\\n")
+                        .findAll { line ->
+                            line &&
+                            !line.startsWith("Bump NerfeAI version") &&
+                            !line.startsWith("Merge ")
+                        }
+                        .collect { line ->
+                            "• " + line
+                        }
+                        .join("\n")
+            }
+
+            if (!updateNotes) {
+                updateNotes = "• Bug fixes and improvements"
+            }
+
+        } catch (Exception ignored) {
+            updateNotes = "• Bug fixes and improvements"
+        }
+
+        /*
+         * Escape the Git output so it can safely be stored inside
+         * an Android BuildConfig String field.
+         */
+        def escapedUpdateNotes = updateNotes
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "")
+                .replace("\n", "\\n")
+
+        buildConfigField(
+                "String",
+                "UPDATE_NOTES",
+                "\"${escapedUpdateNotes}\""
+        )
+
+        /*
+         * GitHub repository used by the update system.
          */
         buildConfigField(
-	        "String",
-	        "UPDATE_REPOSITORY",
-	        "\"${System.getenv("GITHUB_REPOSITORY") ?: "nerfeguno/NerfeAI"}\""
-	)
+                "String",
+                "UPDATE_REPOSITORY",
+                "\"${System.getenv("GITHUB_REPOSITORY") ?: "nerfeguno/NerfeAI"}\""
+        )
 
+        /*
+         * Only build the architecture required by NerfeAI.
+         */
         ndk {
             abiFilters 'arm64-v8a'
         }
 
+        /*
+         * Native llama.cpp configuration.
+         */
         externalNativeBuild {
             cmake {
                 cppFlags '-std=c++17'
@@ -57,16 +150,27 @@ android {
     }
 
     /*
-     * Required because MainActivity uses BuildConfig.UPDATE_REPOSITORY.
+     * Required because the application uses:
+     *
+     * BuildConfig.UPDATE_NOTES
+     * BuildConfig.UPDATE_REPOSITORY
      */
     buildFeatures {
         buildConfig true
     }
 
+    /*
+     * Do not compress GGUF files.
+     *
+     * This is important for the bundled NerfeAI model.
+     */
     androidResources {
         noCompress += ['gguf']
     }
 
+    /*
+     * Java/Kotlin compatibility.
+     */
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -76,6 +180,9 @@ android {
         jvmTarget = '17'
     }
 
+    /*
+     * Native CMake project.
+     */
     externalNativeBuild {
         cmake {
             path file('src/main/cpp/CMakeLists.txt')
@@ -84,7 +191,9 @@ android {
     }
 
     /*
-     * Permanent signing key for GitHub Releases.
+     * ============================================================
+     * Permanent release signing
+     * ============================================================
      */
     signingConfigs {
         release {
@@ -107,11 +216,11 @@ android {
             minifyEnabled false
 
             /*
-             * Use the permanent release key when signing secrets
-             * are available. Otherwise use the debug key.
+             * Use the permanent release key when GitHub Actions
+             * signing secrets are available.
              *
-             * This allows assembleDebug to run in GitHub Actions
-             * without requiring release signing secrets.
+             * Otherwise fall back to the debug key so that
+             * assembleRelease does not fail during development.
              */
             if (nerfeaiSigningReady) {
                 signingConfig signingConfigs.release
@@ -122,6 +231,11 @@ android {
     }
 }
 
+/*
+ * ================================================================
+ * Dependencies
+ * ================================================================
+ */
 dependencies {
     implementation 'androidx.core:core:1.15.0'
 }
