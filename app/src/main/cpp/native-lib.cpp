@@ -625,7 +625,7 @@ Java_com_nerfeai_MainActivity_nativeGenerate(
             i < NERFEAI_MAX_GENERATION;
             ++i) {
 
-        const llama_token newToken =
+        llama_token newToken =
                 llama_sampler_sample(
                         sampler,
                         ctx,
